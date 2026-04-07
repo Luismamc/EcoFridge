@@ -86,11 +86,11 @@ export function ScannerView() {
         setStep('product-found')
         toast.success('Producto encontrado')
       } else {
-        const err = await res.json()
+        const err = await res.json().catch(() => ({ error: 'Producto no encontrado' }))
         toast.error(err.error || 'Producto no encontrado')
       }
     } catch {
-      toast.error('Error de conexión. Verifica tu internet.')
+      toast.error('Error de conexion. Verifica tu internet.')
     } finally {
       setIsSearching(false)
     }
@@ -188,7 +188,7 @@ export function ScannerView() {
     })
   }
 
-  // ── Handle barcode photo (take picture of barcode) ──
+  // ── Handle barcode photo (take picture of barcode, read with AI) ──
   const handleBarcodePhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -197,34 +197,32 @@ export function ScannerView() {
     if (cameraInputRef.current) cameraInputRef.current.value = ''
 
     try {
-      toast.info('Analizando imagen del código de barras...')
+      toast.info('Analizando imagen del codigo de barras...')
 
-      // Try to read barcode from image using AI
+      // Read image and send to AI barcode scanner
       const base64 = await readFileAsBase64(file)
-      const res = await fetch('/api/barcode/lookup', {
+      const res = await fetch('/api/barcode/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          barcode: `PHOTO-${Date.now()}`,
-          name: '',
-          imageData: base64,
-          scanBarcode: true,
-        }),
+        body: JSON.stringify({ imageBase64: base64 }),
       })
 
       if (res.ok) {
         const data = await res.json()
         if (data.barcode) {
-          // AI found a barcode, look it up
+          // AI found a barcode number, now look up the product
+          toast.success(`Codigo detectado: ${data.barcode}`)
+          setBarcode(data.barcode)
           await lookupBarcode(data.barcode)
         } else {
-          toast.error('No se detectó ningún código de barras en la imagen')
+          toast.error('No se detecto ningun codigo de barras. Prueba a escribirlo manualmente.')
         }
       } else {
-        toast.error('No se pudo analizar la imagen. Escribe el código manualmente.')
+        const err = await res.json().catch(() => ({ error: 'Error desconocido' }))
+        toast.error(err.error || 'No se pudo analizar la imagen. Escribe el codigo manualmente.')
       }
     } catch {
-      toast.error('Error al procesar la imagen. Escribe el código manualmente.')
+      toast.error('Error al procesar la imagen. Escribe el codigo manualmente.')
     }
   }
 

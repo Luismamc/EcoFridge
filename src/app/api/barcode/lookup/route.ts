@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
 
 interface OpenFoodFactsProduct {
   code: string
@@ -31,15 +30,21 @@ export async function GET(request: NextRequest) {
 
     if (!barcode) {
       return NextResponse.json(
-        { error: 'El código de barras es obligatorio' },
+        { error: 'El codigo de barras es obligatorio' },
         { status: 400 }
       )
     }
 
-    // Check if product already exists in our database
-    const existingProduct = await db.product.findUnique({
-      where: { barcode },
-    })
+    // Try to get from local database first (may fail on Vercel)
+    let existingProduct = null
+    try {
+      const { db } = await import('@/lib/db')
+      existingProduct = await db.product.findUnique({
+        where: { barcode },
+      })
+    } catch {
+      // Database not available (e.g. first time on Vercel), continue to Open Food Facts
+    }
 
     if (existingProduct) {
       return NextResponse.json(existingProduct)
@@ -59,7 +64,7 @@ export async function GET(request: NextRequest) {
       )
     } catch {
       return NextResponse.json(
-        { error: 'No se pudo conectar con Open Food Facts. Inténtalo de nuevo más tarde.' },
+        { error: 'No se pudo conectar con Open Food Facts. Verifica tu conexion a internet.' },
         { status: 503 }
       )
     }
@@ -84,31 +89,55 @@ export async function GET(request: NextRequest) {
 
     // Extract allergen names from hierarchy tags
     const allergenNames = (p.allergens_hierarchy || []).map(tag => {
-      // Convert tags like 'en:gluten' to 'Gluten'
       const parts = tag.split(':')
       const name = parts[parts.length - 1] || tag
       return name.charAt(0).toUpperCase() + name.slice(1)
     })
 
-    // Create product in our database
-    const product = await db.product.create({
-      data: {
-        barcode: p.code,
-        name: p.product_name_es || p.product_name || 'Producto sin nombre',
-        brand: p.brands || null,
-        category: p.categories || null,
-        imageUrl: p.image_url || p.image_front_url || null,
-        quantity: p.quantity || null,
-        nutritionGrade: p.nutrition_grades || null,
-        ingredients: p.ingredients_text_es || p.ingredients_text || null,
-        allergens: allergenNames.length > 0 ? JSON.stringify(allergenNames) : null,
-        allergensTags: p.allergens ? p.allergens : null,
-      },
-    })
+    // Build the product object
+    const product = {
+      id: `off-${p.code}`,
+      barcode: p.code,
+      name: p.product_name_es || p.product_name || 'Producto sin nombre',
+      brand: p.brands || null,
+      category: p.categories || null,
+      imageUrl: p.image_url || p.image_front_url || null,
+      quantity: p.quantity || null,
+      nutritionGrade: p.nutrition_grades || null,
+      ingredients: p.ingredients_text_es || p.ingredients_text || null,
+      allergens: allergenNames.length > 0 ? JSON.stringify(allergenNames) : null,
+      allergensTags: p.allergens ? p.allergens : null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }
+
+    // Try to save to local database (may fail on Vercel, that's ok)
+    try {
+      const { db } = await import('@/lib/db')
+      const existing = await db.product.findUnique({ where: { barcode: p.code } })
+      if (!existing) {
+        await db.product.create({
+          data: {
+            barcode: p.code,
+            name: p.product_name_es || p.product_name || 'Producto sin nombre',
+            brand: p.brands || null,
+            category: p.categories || null,
+            imageUrl: p.image_url || p.image_front_url || null,
+            quantity: p.quantity || null,
+            nutritionGrade: p.nutrition_grades || null,
+            ingredients: p.ingredients_text_es || p.ingredients_text || null,
+            allergens: allergenNames.length > 0 ? JSON.stringify(allergenNames) : null,
+            allergensTags: p.allergens ? p.allergens : null,
+          },
+        })
+      }
+    } catch {
+      // Database save failed - not critical, we still return the product data
+    }
 
     return NextResponse.json(product)
   } catch (error) {
-    console.error('Error en búsqueda de código de barras:', error)
+    console.error('Error en busqueda de codigo de barras:', error)
     return NextResponse.json(
       { error: 'Error interno del servidor' },
       { status: 500 }
@@ -116,7 +145,7 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST: Create a manual product (for products without barcode)
+// POST: Create a manual product
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
@@ -124,31 +153,52 @@ export async function POST(request: NextRequest) {
 
     if (!barcode || !name) {
       return NextResponse.json(
-        { error: 'Código de barras y nombre son obligatorios' },
+        { error: 'Codigo de barras y nombre son obligatorios' },
         { status: 400 }
       )
     }
 
-    // Check if product already exists
-    const existing = await db.product.findUnique({
-      where: { barcode },
-    })
+    // Try to save to database
+    try {
+      const { db } = await import('@/lib/db')
 
-    if (existing) {
-      return NextResponse.json(existing)
-    }
+      const existing = await db.product.findUnique({
+        where: { barcode },
+      })
 
-    // Create manual product
-    const product = await db.product.create({
-      data: {
+      if (existing) {
+        return NextResponse.json(existing)
+      }
+
+      const product = await db.product.create({
+        data: {
+          barcode,
+          name,
+          brand: brand || null,
+          category: category || null,
+        },
+      })
+
+      return NextResponse.json(product)
+    } catch {
+      // Database not available - return a virtual product object
+      const product = {
+        id: `manual-${barcode}`,
         barcode,
         name,
         brand: brand || null,
         category: category || null,
-      },
-    })
-
-    return NextResponse.json(product)
+        imageUrl: null,
+        quantity: null,
+        nutritionGrade: null,
+        ingredients: null,
+        allergens: null,
+        allergensTags: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }
+      return NextResponse.json(product)
+    }
   } catch (error) {
     console.error('Error al crear producto manual:', error)
     return NextResponse.json(

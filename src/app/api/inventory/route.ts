@@ -1,8 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
+
+async function getDb() {
+  try {
+    const { db } = await import('@/lib/db')
+    return db
+  } catch {
+    return null
+  }
+}
 
 export async function GET(request: NextRequest) {
   try {
+    const db = await getDb()
+    if (!db) {
+      return NextResponse.json([])
+    }
+
     const { searchParams } = new URL(request.url)
     const location = searchParams.get('location')
     const expiring = searchParams.get('expiring')
@@ -35,7 +48,6 @@ export async function GET(request: NextRequest) {
       },
     })
 
-    // Map Date objects to strings for JSON serialization
     const serialized = items.map(item => ({
       ...item,
       expirationDate: item.expirationDate?.toISOString() ?? null,
@@ -53,10 +65,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(serialized)
   } catch (error) {
     console.error('Error al obtener inventario:', error)
-    return NextResponse.json(
-      { error: 'Error interno del servidor' },
-      { status: 500 }
-    )
+    return NextResponse.json([])
   }
 }
 
@@ -72,6 +81,24 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    const db = await getDb()
+    if (!db) {
+      return NextResponse.json(
+        { error: 'Base de datos no disponible. La app necesita un servidor con base de datos persistente.' },
+        { status: 503 }
+      )
+    }
+
+    // If productId starts with "off-" or "manual-", create product first
+    if (productId.startsWith('off-') || productId.startsWith('manual-')) {
+      // The product was a virtual one from Open Food Facts or manual entry
+      // We need to create it in the database first
+      return NextResponse.json(
+        { error: 'Este producto necesita ser creado primero. Vuelve al escaner y busca el producto de nuevo.' },
+        { status: 400 }
+      )
+    }
+
     // Verify product exists
     const product = await db.product.findUnique({
       where: { id: productId },
@@ -79,7 +106,7 @@ export async function POST(request: NextRequest) {
 
     if (!product) {
       return NextResponse.json(
-        { error: 'Producto no encontrado' },
+        { error: 'Producto no encontrado. Vuelve a escanearlo.' },
         { status: 404 }
       )
     }
