@@ -9,24 +9,9 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { toast } from 'sonner'
 
 type Step = 'scan' | 'product-found' | 'add-details' | 'ticket-scan' | 'ticket-results'
-
-// ── Platform detection ──
-let _isNative: boolean | null = null
-
-async function isNativePlatform(): Promise<boolean> {
-  if (_isNative !== null) return _isNative
-  try {
-    const { Capacitor } = await import('@capacitor/core')
-    _isNative = Capacitor.isNativePlatform()
-  } catch {
-    _isNative = false
-  }
-  return _isNative
-}
 
 function parseAllergens(allergens: string | null): string[] {
   if (!allergens) return []
@@ -78,26 +63,17 @@ export function ScannerView() {
   const [manualName, setManualName] = useState('')
   const [manualBrand, setManualBrand] = useState('')
   const [manualCategory, setManualCategory] = useState('')
-  const [showManualEntry, setShowManualEntry] = useState(false)
-  const [isNative, setIsNative] = useState(false)
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const streamRef = useRef<MediaStream | null>(null)
-  const [cameraActive, setCameraActive] = useState(false)
 
   // Ticket scanning state
   const [ticketImage, setTicketImage] = useState<string | null>(null)
   const [ticketProducts, setTicketProducts] = useState<TicketProduct[]>([])
   const [isScanningTicket, setIsScanningTicket] = useState(false)
   const [ticketChecked, setTicketChecked] = useState<Record<string, boolean>>({})
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const ticketCameraRef = useRef<HTMLVideoElement>(null)
-  const [ticketCameraActive, setTicketCameraActive] = useState(false)
-  const ticketCameraStreamRef = useRef<MediaStream | null>(null)
 
-  // Check platform on mount
-  useEffect(() => {
-    isNativePlatform().then(setIsNative)
-  }, [])
+  // Hidden file inputs (the reliable way to access camera on Android)
+  const cameraInputRef = useRef<HTMLInputElement>(null)
+  const ticketCameraInputRef = useRef<HTMLInputElement>(null)
+  const ticketGalleryInputRef = useRef<HTMLInputElement>(null)
 
   const lookupBarcode = async (code: string) => {
     if (!code.trim()) return
@@ -124,7 +100,7 @@ export function ScannerView() {
     try {
       let productId = product?.id
 
-      if (showManualEntry && !productId) {
+      if (!productId) {
         const manualBarcode = `MANUAL-${Date.now()}`
         const res = await fetch('/api/barcode/lookup', {
           method: 'POST',
@@ -179,39 +155,6 @@ export function ScannerView() {
     setManualName('')
     setManualBrand('')
     setManualCategory('')
-    setShowManualEntry(false)
-  }
-
-  const stopCamera = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop())
-      streamRef.current = null
-      setCameraActive(false)
-    }
-  }
-
-  useEffect(() => {
-    return () => {
-      stopCamera()
-      stopTicketCamera()
-    }
-  }, [])
-
-  // ── Web-only camera (for browser) ──
-  const startCamera = async () => {
-    if (isNative) return // Don't use getUserMedia in native
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' }
-      })
-      streamRef.current = stream
-      setCameraActive(true)
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream
-      }
-    } catch {
-      toast.error('No se pudo acceder a la cámara')
-    }
   }
 
   const handleManualSubmit = () => {
@@ -232,115 +175,84 @@ export function ScannerView() {
       allergens: null,
       allergensTags: null,
     })
-    setShowManualEntry(true)
     setStep('add-details')
   }
 
-  // ── Native camera: take photo using Capacitor Camera plugin ──
-  const takePhotoNative = async (): Promise<string | null> => {
-    try {
-      const { Camera } = await import('@capacitor/camera')
-      const photo = await Camera.getPhoto({
-        quality: 85,
-        resultType: 'Base64',
-        source: 'camera',
-        correctOrientation: true,
-        width: 1920,
-        height: 1080,
-      })
-      return photo.base64String ? `data:image/jpeg;base64,${photo.base64String}` : null
-    } catch {
-      toast.error('No se pudo acceder a la cámara')
-      return null
-    }
+  // ── Read file from input as base64 ──
+  const readFileAsBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result as string)
+      reader.onerror = reject
+      reader.readAsDataURL(file)
+    })
   }
 
-  const pickFromGalleryNative = async (): Promise<string | null> => {
-    try {
-      const { Camera } = await import('@capacitor/camera')
-      const photo = await Camera.getPhoto({
-        quality: 85,
-        resultType: 'Base64',
-        source: 'photos',
-        correctOrientation: true,
-        width: 1920,
-        height: 1080,
-      })
-      return photo.base64String ? `data:image/jpeg;base64,${photo.base64String}` : null
-    } catch {
-      toast.error('No se pudo acceder a la galería')
-      return null
-    }
-  }
-
-  // ── Ticket Scanning ──
-  const stopTicketCamera = () => {
-    if (ticketCameraStreamRef.current) {
-      ticketCameraStreamRef.current.getTracks().forEach(track => track.stop())
-      ticketCameraStreamRef.current = null
-      setTicketCameraActive(false)
-    }
-  }
-
-  // Web-only ticket camera
-  const startTicketCamera = async () => {
-    if (isNative) return
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
-      })
-      ticketCameraStreamRef.current = stream
-      setTicketCameraActive(true)
-      if (ticketCameraRef.current) {
-        ticketCameraRef.current.srcObject = stream
-      }
-    } catch {
-      toast.error('No se pudo acceder a la cámara')
-    }
-  }
-
-  // Unified: take photo for ticket (works on both native and web)
-  const captureTicketPhotoNative = async () => {
-    const photo = await takePhotoNative()
-    if (photo) {
-      setTicketImage(photo)
-    }
-  }
-
-  // Web-only: capture from video stream
-  const captureTicketPhotoWeb = () => {
-    if (!ticketCameraRef.current) return
-    const canvas = document.createElement('canvas')
-    canvas.width = ticketCameraRef.current.videoWidth || 1280
-    canvas.height = ticketCameraRef.current.videoHeight || 720
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
-    ctx.drawImage(ticketCameraRef.current, 0, 0)
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.85)
-    setTicketImage(dataUrl)
-    stopTicketCamera()
-  }
-
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // ── Handle barcode photo (take picture of barcode) ──
+  const handleBarcodePhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
 
-    const reader = new FileReader()
-    reader.onload = (ev) => {
-      const dataUrl = ev.target?.result as string
-      setTicketImage(dataUrl)
+    // Reset input so same file can be selected again
+    if (cameraInputRef.current) cameraInputRef.current.value = ''
+
+    try {
+      toast.info('Analizando imagen del código de barras...')
+
+      // Try to read barcode from image using AI
+      const base64 = await readFileAsBase64(file)
+      const res = await fetch('/api/barcode/lookup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          barcode: `PHOTO-${Date.now()}`,
+          name: '',
+          imageData: base64,
+          scanBarcode: true,
+        }),
+      })
+
+      if (res.ok) {
+        const data = await res.json()
+        if (data.barcode) {
+          // AI found a barcode, look it up
+          await lookupBarcode(data.barcode)
+        } else {
+          toast.error('No se detectó ningún código de barras en la imagen')
+        }
+      } else {
+        toast.error('No se pudo analizar la imagen. Escribe el código manualmente.')
+      }
+    } catch {
+      toast.error('Error al procesar la imagen. Escribe el código manualmente.')
     }
-    reader.readAsDataURL(file)
-    if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
-  // Unified ticket gallery pick (works on both native and web)
-  const pickTicketFromGallery = async () => {
-    if (isNative) {
-      const photo = await pickFromGalleryNative()
-      if (photo) setTicketImage(photo)
-    } else {
-      fileInputRef.current?.click()
+  // ── Handle ticket photo from camera ──
+  const handleTicketCameraCapture = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (ticketCameraInputRef.current) ticketCameraInputRef.current.value = ''
+
+    try {
+      const base64 = await readFileAsBase64(file)
+      setTicketImage(base64)
+    } catch {
+      toast.error('No se pudo cargar la imagen')
+    }
+  }
+
+  // ── Handle ticket photo from gallery ──
+  const handleTicketGallerySelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (ticketGalleryInputRef.current) ticketGalleryInputRef.current.value = ''
+
+    try {
+      const base64 = await readFileAsBase64(file)
+      setTicketImage(base64)
+    } catch {
+      toast.error('No se pudo cargar la imagen')
     }
   }
 
@@ -416,7 +328,6 @@ export function ScannerView() {
     setTicketImage(null)
     setTicketProducts([])
     setTicketChecked({})
-    stopTicketCamera()
   }
 
   const toggleTicketProduct = (id: string) => {
@@ -435,8 +346,34 @@ export function ScannerView() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Escanear Producto</h1>
-        <p className="text-sm text-gray-500 mt-1">Escanea código de barras, ticket de compra o añade manualmente</p>
+        <p className="text-sm text-gray-500 mt-1">Escanear código de barras, ticket de compra o añadir manualmente</p>
       </div>
+
+      {/* ── Hidden file inputs (camera + gallery) ── */}
+      {/* capture="environment" = rear camera on mobile devices */}
+      <input
+        ref={cameraInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        onChange={handleBarcodePhoto}
+        className="hidden"
+      />
+      <input
+        ref={ticketCameraInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        onChange={handleTicketCameraCapture}
+        className="hidden"
+      />
+      <input
+        ref={ticketGalleryInputRef}
+        type="file"
+        accept="image/*"
+        onChange={handleTicketGallerySelect}
+        className="hidden"
+      />
 
       <AnimatePresence mode="wait">
         {/* Step: Scan (Main) */}
@@ -461,65 +398,25 @@ export function ScannerView() {
                   <span className="text-[10px] text-gray-500">Foto del ticket de compra</span>
                 </div>
               </Button>
-              {!isNative && (
-                <Button
-                  variant="outline"
-                  onClick={startCamera}
-                  className="h-24 flex-col gap-2 rounded-xl border-2 hover:border-green-300 hover:bg-green-50 p-4"
-                >
-                  <Camera className="w-8 h-8 text-green-500" />
-                  <div className="text-left">
-                    <span className="text-sm font-semibold text-gray-800 block">Escanear código</span>
-                    <span className="text-[10px] text-gray-500">Cámara en vivo</span>
-                  </div>
-                </Button>
-              )}
+              <Button
+                variant="outline"
+                onClick={() => cameraInputRef.current?.click()}
+                className="h-24 flex-col gap-2 rounded-xl border-2 hover:border-green-300 hover:bg-green-50 p-4"
+              >
+                <Camera className="w-8 h-8 text-green-500" />
+                <div className="text-left">
+                  <span className="text-sm font-semibold text-gray-800 block">Foto código barras</span>
+                  <span className="text-[10px] text-gray-500">Usa la cámara</span>
+                </div>
+              </Button>
             </div>
-
-            {/* Camera Section (for barcode) - WEB ONLY */}
-            {!isNative && (
-              <Card className="overflow-hidden">
-                <CardContent className="p-0">
-                  {cameraActive ? (
-                    <div className="relative">
-                      <video
-                        ref={videoRef}
-                        autoPlay
-                        playsInline
-                        className="w-full h-64 object-cover"
-                      />
-                      <div className="absolute inset-0 flex items-center justify-center">
-                        <div className="w-64 h-24 border-2 border-white rounded-lg shadow-[0_0_0_9999px_rgba(0,0,0,0.3)]">
-                          <div className="absolute top-0 left-0 w-6 h-6 border-t-4 border-l-4 border-green-400 rounded-tl-lg" />
-                          <div className="absolute top-0 right-0 w-6 h-6 border-t-4 border-r-4 border-green-400 rounded-tr-lg" />
-                          <div className="absolute bottom-0 left-0 w-6 h-6 border-b-4 border-l-4 border-green-400 rounded-bl-lg" />
-                          <div className="absolute bottom-0 right-0 w-6 h-6 border-b-4 border-r-4 border-green-400 rounded-br-lg" />
-                        </div>
-                      </div>
-                      <Button
-                        onClick={stopCamera}
-                        className="absolute top-3 right-3 bg-black/50 hover:bg-black/70 rounded-full p-2"
-                        size="icon"
-                      >
-                        <X className="w-4 h-4 text-white" />
-                      </Button>
-                    </div>
-                  ) : (
-                    <div className="h-24 bg-gray-50 flex flex-col items-center justify-center text-gray-400">
-                      <Camera className="w-8 h-8 mb-1" />
-                      <span className="text-xs">Cámara desactivada</span>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            )}
 
             {/* Manual Barcode Input */}
             <Card>
               <CardContent className="p-4 space-y-3">
                 <div>
                   <Label htmlFor="barcode" className="text-sm font-medium text-gray-700">
-                    Introduce el código de barras
+                    O introduce el código manualmente
                   </Label>
                   <div className="flex gap-2 mt-1.5">
                     <Input
@@ -542,11 +439,6 @@ export function ScannerView() {
                       )}
                     </Button>
                   </div>
-                  {isNative && (
-                    <p className="text-xs text-gray-400 mt-1">
-                      Escribe los números del código de barras que aparecen debajo del producto
-                    </p>
-                  )}
                 </div>
 
                 <div className="relative">
@@ -800,106 +692,37 @@ export function ScannerView() {
                   Toma una foto al ticket de compra o selecciona una imagen de tu galería. La IA identificará los productos automáticamente.
                 </p>
 
-                {/* Camera or Image Preview */}
-                {/* NATIVE: No live camera, just buttons */}
-                {isNative ? (
-                  ticketImage ? (
-                    <div className="relative rounded-xl overflow-hidden mb-3">
-                      <img src={ticketImage} alt="Ticket" className="w-full h-72 object-contain bg-gray-100" />
-                      <div className="absolute top-3 right-3 flex gap-2">
-                        <Button
-                          onClick={() => setTicketImage(null)}
-                          className="bg-black/50 hover:bg-black/70 rounded-full p-2"
-                          size="icon"
-                        >
-                          <X className="w-4 h-4 text-white" />
-                        </Button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-3 mb-3">
-                      <button
-                        onClick={captureTicketPhotoNative}
-                        className="w-full p-6 bg-purple-50 border-2 border-dashed border-purple-200 rounded-xl flex flex-col items-center gap-2 hover:bg-purple-100 transition-colors"
-                      >
-                        <Camera className="w-10 h-10 text-purple-400" />
-                        <span className="text-sm font-medium text-purple-600">Tomar foto al ticket</span>
-                      </button>
-                      <button
-                        onClick={pickTicketFromGallery}
-                        className="w-full p-6 bg-gray-50 border-2 border-dashed border-gray-200 rounded-xl flex flex-col items-center gap-2 hover:bg-gray-100 transition-colors"
-                      >
-                        <ImageIcon className="w-10 h-10 text-gray-400" />
-                        <span className="text-sm font-medium text-gray-600">Seleccionar de galería</span>
-                      </button>
-                    </div>
-                  )
-                ) : (
-                  /* WEB: Live camera + file input */
-                  ticketCameraActive ? (
-                    <div className="relative rounded-xl overflow-hidden mb-3">
-                      <video
-                        ref={ticketCameraRef}
-                        autoPlay
-                        playsInline
-                        className="w-full h-72 object-cover"
-                      />
-                      <div className="absolute inset-0 flex items-end justify-center pb-4">
-                        <Button
-                          onClick={captureTicketPhotoWeb}
-                          className="bg-white text-gray-800 hover:bg-gray-100 rounded-full w-16 h-16 shadow-xl"
-                          size="icon"
-                        >
-                          <Camera className="w-8 h-8" />
-                        </Button>
-                      </div>
+                {/* Image Preview or Camera/Gallery Buttons */}
+                {ticketImage ? (
+                  <div className="relative rounded-xl overflow-hidden mb-3">
+                    <img src={ticketImage} alt="Ticket" className="w-full h-72 object-contain bg-gray-100" />
+                    <div className="absolute top-3 right-3">
                       <Button
-                        onClick={stopTicketCamera}
-                        className="absolute top-3 right-3 bg-black/50 hover:bg-black/70 rounded-full p-2"
+                        onClick={() => setTicketImage(null)}
+                        className="bg-black/50 hover:bg-black/70 rounded-full p-2"
                         size="icon"
                       >
                         <X className="w-4 h-4 text-white" />
                       </Button>
                     </div>
-                  ) : ticketImage ? (
-                    <div className="relative rounded-xl overflow-hidden mb-3">
-                      <img src={ticketImage} alt="Ticket" className="w-full h-72 object-contain bg-gray-100" />
-                      <div className="absolute top-3 right-3 flex gap-2">
-                        <Button
-                          onClick={() => setTicketImage(null)}
-                          className="bg-black/50 hover:bg-black/70 rounded-full p-2"
-                          size="icon"
-                        >
-                          <X className="w-4 h-4 text-white" />
-                        </Button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-3 mb-3">
-                      <button
-                        onClick={startTicketCamera}
-                        className="w-full p-6 bg-purple-50 border-2 border-dashed border-purple-200 rounded-xl flex flex-col items-center gap-2 hover:bg-purple-100 transition-colors"
-                      >
-                        <Camera className="w-10 h-10 text-purple-400" />
-                        <span className="text-sm font-medium text-purple-600">Tomar foto al ticket</span>
-                      </button>
-                      <button
-                        onClick={() => fileInputRef.current?.click()}
-                        className="w-full p-6 bg-gray-50 border-2 border-dashed border-gray-200 rounded-xl flex flex-col items-center gap-2 hover:bg-gray-100 transition-colors"
-                      >
-                        <ImageIcon className="w-10 h-10 text-gray-400" />
-                        <span className="text-sm font-medium text-gray-600">Seleccionar de galería</span>
-                      </button>
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        accept="image/*"
-                        capture="environment"
-                        onChange={handleFileSelect}
-                        className="hidden"
-                      />
-                    </div>
-                  )
+                  </div>
+                ) : (
+                  <div className="space-y-3 mb-3">
+                    <button
+                      onClick={() => ticketCameraInputRef.current?.click()}
+                      className="w-full p-6 bg-purple-50 border-2 border-dashed border-purple-200 rounded-xl flex flex-col items-center gap-2 hover:bg-purple-100 transition-colors active:scale-[0.98]"
+                    >
+                      <Camera className="w-10 h-10 text-purple-400" />
+                      <span className="text-sm font-medium text-purple-600">Tomar foto al ticket</span>
+                    </button>
+                    <button
+                      onClick={() => ticketGalleryInputRef.current?.click()}
+                      className="w-full p-6 bg-gray-50 border-2 border-dashed border-gray-200 rounded-xl flex flex-col items-center gap-2 hover:bg-gray-100 transition-colors active:scale-[0.98]"
+                    >
+                      <ImageIcon className="w-10 h-10 text-gray-400" />
+                      <span className="text-sm font-medium text-gray-600">Seleccionar de galería</span>
+                    </button>
+                  </div>
                 )}
 
                 {/* Default location for all ticket products */}
