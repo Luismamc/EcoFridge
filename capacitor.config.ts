@@ -19,9 +19,7 @@ const config: CapacitorConfig = {
   webDir: 'public',
 
   server: {
-    // ⚠️ PASO OBLIGATORIO: Pon aquí la URL de tu app desplegada en Vercel
-    // Descomenta la siguiente línea y sustitúyela por tu URL real:
-    // url: 'https://tu-app-en-vercel.vercel.app',
+    url: 'https://eco-fridge-rlu1.vercel.app',
     androidScheme: 'https',
     allowNavigation: ['*'],
   },
