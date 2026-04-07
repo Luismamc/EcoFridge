@@ -1,0 +1,74 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Product {
+  id             String          @id @default(cuid())
+  barcode        String          @unique
+  name           String
+  brand          String?
+  category       String?
+  imageUrl       String?
+  quantity       String?
+  nutritionGrade String?
+  ingredients    String?
+  allergens      String?         // JSON array of allergen names
+  allergensTags  String?         // Raw allergens tags from Open Food Facts
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  inventory      InventoryItem[]
+  wasteLogs      WasteLog[]
+  consumptionLogs ConsumptionLog[]
+}
+
+model InventoryItem {
+  id            String   @id @default(cuid())
+  productId     String
+  product       Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  quantity      Int      @default(1)
+  location      String   @default("fridge") // fridge, pantry, freezer
+  expirationDate DateTime?
+  addedAt       DateTime @default(now())
+  consumed      Boolean  @default(false)
+  consumedAt    DateTime?
+  consumedAs    String   @default("individual") // individual, recipe
+  recipeName    String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model ConsumptionLog {
+  id            String   @id @default(cuid())
+  productId     String
+  product       Product  @relation(fields: [productId], references: [id])
+  quantity      Int      @default(1)
+  consumedAs    String   @default("individual") // individual, recipe
+  recipeName    String?
+  notes         String?
+  consumedAt    DateTime @default(now())
+  createdAt     DateTime @default(now())
+}
+
+model WasteLog {
+  id          String   @id @default(cuid())
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id])
+  quantity    Int      @default(1)
+  reason      String?  // expired, spoiled, excess, taste
+  notes       String?
+  discardedAt DateTime @default(now())
+  createdAt   DateTime @default(now())
+}
+
+model RecipeCache {
+  id          String   @id @default(cuid())
+  ingredients String   // JSON array of ingredient names
+  recipeName  String
+  recipeData  String   // JSON object with full recipe
+  createdAt   DateTime @default(now())
+}
