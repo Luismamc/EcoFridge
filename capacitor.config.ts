@@ -2,32 +2,37 @@ import type { CapacitorConfig } from '@capacitor/cli';
 
 /**
  * Configuración de Capacitor para EcoFridge
- * 
- * ARQUITECTURA: La app web se despliega en un servidor (Vercel, Railway, etc.)
- * y Capacitor crea la envoltura nativa que la carga en un WebView nativo.
- * 
+ *
+ * IMPORTANTE: La app Next.js DEBE estar desplegada en internet (Vercel, Railway, etc.)
+ * para que las APIs (código de barras, inventario, recetas, etc.) funcionen.
+ *
  * PASOS:
  * 1. Despliega la app Next.js en Vercel/Railway
- * 2. Cambia la URL de server.url a la URL de tu despliegue
- * 3. Ejecuta: npx cap sync android / npx cap sync ios
- * 4. Abre en Android Studio / Xcode y compila
+ * 2. Copia la URL de tu despliegue (ej: https://ecofridge-tu-app.vercel.app)
+ * 3. Pon esa URL en server.url abajo (descomenta la línea y sustitúyela)
+ * 4. Ejecuta: npx cap sync android && npx cap open android
+ * 5. Compila desde Android Studio
  */
 const config: CapacitorConfig = {
   appId: 'com.ecofridge.app',
   appName: 'EcoFridge',
-  webDir: 'public', // Se usa como fallback, server.url es la fuente principal
-  
-  // ⚠️ CAMBIA esta URL por la de tu despliegue (Vercel, Railway, etc.)
+  webDir: 'public',
+
   server: {
-    // Descomenta y pon tu URL cuando desplies:
-    // url: 'https://ecofridge-tu-app.vercel.app',
+    // ⚠️ PASO OBLIGATORIO: Pon aquí la URL de tu app desplegada en Vercel
+    // Descomenta la siguiente línea y sustitúyela por tu URL real:
+    // url: 'https://tu-app-en-vercel.vercel.app',
     androidScheme: 'https',
     allowNavigation: ['*'],
   },
-  
+
   plugins: {
+    Camera: {
+      // En Android, usar la cámara del sistema directamente
+      presentationStyle: 'fullscreen',
+    },
     SplashScreen: {
-      launchAutoHide: false, // Lo ocultamos manualmente cuando la web cargue
+      launchAutoHide: false,
       androidScaleType: 'CENTER_CROP',
       splashFullScreen: true,
       splashImmersive: true,
@@ -39,12 +44,6 @@ const config: CapacitorConfig = {
     StatusBar: {
       style: 'LIGHT',
       backgroundColor: '#16a34a',
-    },
-    Camera: {
-      presentationStyle: 'fullscreen',
-    },
-    Network: {
-      // Mostrar alerta si no hay conexión
     },
   },
 };
