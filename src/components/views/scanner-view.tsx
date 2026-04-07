@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useRef, useEffect } from 'react'
+import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { useApp, type Product } from '../app-context'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Camera, Search, Plus, CalendarDays, MapPin, Loader2, CheckCircle2, X, ShieldAlert, Receipt, ImageIcon, ChevronRight, Sparkles } from 'lucide-react'
@@ -10,6 +10,59 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
+
+// ── Compress image to reduce size before sending to API ──
+function compressImage(file: File, maxWidth = 1200, quality = 0.8): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      const img = new Image()
+      img.onload = () => {
+        const canvas = document.createElement('canvas')
+        let w = img.width
+        let h = img.height
+        if (w > maxWidth) {
+          h = Math.round((h * maxWidth) / w)
+          w = maxWidth
+        }
+        canvas.width = w
+        canvas.height = h
+        const ctx = canvas.getContext('2d')
+        if (!ctx) { reject(new Error('Canvas context failed')); return }
+        ctx.drawImage(img, 0, 0, w, h)
+        resolve(canvas.toDataURL('image/jpeg', quality))
+      }
+      img.onerror = reject
+      img.src = e.target?.result as string
+    }
+    reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
+}
+
+// ── Try native BarcodeDetector (Chrome 83+, Android WebView) ──
+async function detectBarcodeNative(file: File): Promise<string | null> {
+  if (typeof window === 'undefined') return null
+  const BarcodeDetector = (window as any).BarcodeDetector
+  if (!BarcodeDetector) return null
+  try {
+    const detector = new BarcodeDetector({
+      formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'qr_code', 'itf'],
+    })
+    const img = await createImageBitmap(file)
+    const barcodes = await detector.detect(img)
+    if (barcodes && barcodes.length > 0) {
+      // Prefer EAN/UPC codes (product barcodes)
+      const productBarcode = barcodes.find(
+        (b: any) => b.format.includes('ean') || b.format.includes('upc')
+      )
+      return (productBarcode || barcodes[0]).rawValue
+    }
+  } catch {
+    // BarcodeDetector not available or failed
+  }
+  return null
+}
 
 type Step = 'scan' | 'product-found' | 'add-details' | 'ticket-scan' | 'ticket-results'
 
@@ -188,7 +241,7 @@ export function ScannerView() {
     })
   }
 
-  // ── Handle barcode photo (take picture of barcode, read with AI) ──
+  // ── Handle barcode photo (take picture, try native detection, then VLM fallback) ──
   const handleBarcodePhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -198,24 +251,39 @@ export function ScannerView() {
 
     try {
       toast.info('Analizando imagen del codigo de barras...')
+      setIsSearching(true)
 
-      // Read image and send to AI barcode scanner
-      const base64 = await readFileAsBase64(file)
+      // ── STEP 1: Try native BarcodeDetector (fast, works on Android WebView) ──
+      const nativeBarcode = await detectBarcodeNative(file)
+      if (nativeBarcode) {
+        toast.success(`Codigo detectado: ${nativeBarcode}`)
+        setBarcode(nativeBarcode)
+        setIsSearching(false)
+        await lookupBarcode(nativeBarcode)
+        return
+      }
+
+      // ── STEP 2: Try VLM (AI vision) as fallback ──
+      toast.info('Intentando reconocimiento con IA...')
+
+      // Compress image first (mobile photos can be 10MB+)
+      const compressedBase64 = await compressImage(file, 1200, 0.75)
+
       const res = await fetch('/api/barcode/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imageBase64: base64 }),
+        body: JSON.stringify({ imageBase64: compressedBase64 }),
       })
 
       if (res.ok) {
         const data = await res.json()
         if (data.barcode) {
-          // AI found a barcode number, now look up the product
           toast.success(`Codigo detectado: ${data.barcode}`)
           setBarcode(data.barcode)
+          setIsSearching(false)
           await lookupBarcode(data.barcode)
         } else {
-          toast.error('No se detecto ningun codigo de barras. Prueba a escribirlo manualmente.')
+          toast.error('No se detecto ningun codigo de barras. Prueba a acercar la camara mas al codigo o escribirlo manualmente.')
         }
       } else {
         const err = await res.json().catch(() => ({ error: 'Error desconocido' }))
@@ -223,6 +291,8 @@ export function ScannerView() {
       }
     } catch {
       toast.error('Error al procesar la imagen. Escribe el codigo manualmente.')
+    } finally {
+      setIsSearching(false)
     }
   }
 
@@ -398,13 +468,22 @@ export function ScannerView() {
               </Button>
               <Button
                 variant="outline"
-                onClick={() => cameraInputRef.current?.click()}
-                className="h-24 flex-col gap-2 rounded-xl border-2 hover:border-green-300 hover:bg-green-50 p-4"
+                onClick={() => !isSearching && cameraInputRef.current?.click()}
+                disabled={isSearching}
+                className="h-24 flex-col gap-2 rounded-xl border-2 hover:border-green-300 hover:bg-green-50 p-4 disabled:opacity-50"
               >
-                <Camera className="w-8 h-8 text-green-500" />
+                {isSearching ? (
+                  <Loader2 className="w-8 h-8 text-green-500 animate-spin" />
+                ) : (
+                  <Camera className="w-8 h-8 text-green-500" />
+                )}
                 <div className="text-left">
-                  <span className="text-sm font-semibold text-gray-800 block">Foto código barras</span>
-                  <span className="text-[10px] text-gray-500">Usa la cámara</span>
+                  <span className="text-sm font-semibold text-gray-800 block">
+                    {isSearching ? 'Analizando...' : 'Foto código barras'}
+                  </span>
+                  <span className="text-[10px] text-gray-500">
+                    {isSearching ? 'Detectando código...' : 'Usa la cámara'}
+                  </span>
                 </div>
               </Button>
             </div>
