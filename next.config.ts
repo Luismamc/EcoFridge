@@ -6,11 +6,12 @@ const nextConfig: NextConfig = {
     ignoreBuildErrors: true,
   },
   reactStrictMode: false,
-  // Para build móvil con Capacitor (export estático del frontend)
-  // Las API routes se sirven desde el servidor remoto
   images: {
     unoptimized: true,
   },
+  // External packages that should not be bundled by webpack
+  // Required for Turso/LibSQL native TCP connection on Vercel
+  serverExternalPackages: ['@libsql/client'],
 };
 
 export default nextConfig;

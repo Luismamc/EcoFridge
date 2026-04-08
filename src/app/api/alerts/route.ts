@@ -3,8 +3,13 @@ import { NextResponse } from 'next/server'
 async function getDb() {
   try {
     const { ensureTables } = await import('@/lib/db')
-    return await ensureTables()
-  } catch {
+    const result = await ensureTables()
+    if (result.error) {
+      console.error('DB table error:', result.error)
+    }
+    return result.db
+  } catch (error: any) {
+    console.error('Failed to initialize database:', error?.message || error)
     return null
   }
 }

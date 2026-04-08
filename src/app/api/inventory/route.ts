@@ -3,10 +3,13 @@ import { NextRequest, NextResponse } from 'next/server'
 async function getDb() {
   try {
     const { ensureTables } = await import('@/lib/db')
-    const db = await ensureTables()
-    return db
-  } catch (error) {
-    console.error('Failed to initialize database:', error)
+    const result = await ensureTables()
+    if (result.error) {
+      console.error('DB table error:', result.error)
+    }
+    return result.db
+  } catch (error: any) {
+    console.error('Failed to initialize database:', error?.message || error)
     return null
   }
 }
@@ -14,9 +17,7 @@ async function getDb() {
 export async function GET(request: NextRequest) {
   try {
     const db = await getDb()
-    if (!db) {
-      return NextResponse.json([])
-    }
+    if (!db) return NextResponse.json([])
 
     const { searchParams } = new URL(request.url)
     const location = searchParams.get('location')
@@ -25,29 +26,20 @@ export async function GET(request: NextRequest) {
     const now = new Date()
     const twoDaysFromNow = new Date(now.getTime() + 2 * 24 * 60 * 60 * 1000)
 
-    const where: Record<string, unknown> = {
-      consumed: false,
-    }
+    const where: Record<string, unknown> = { consumed: false }
 
     if (location && ['fridge', 'pantry', 'freezer'].includes(location)) {
       where.location = location
     }
 
     if (expiring === 'true') {
-      where.expirationDate = {
-        lte: twoDaysFromNow,
-        gte: now,
-      }
+      where.expirationDate = { lte: twoDaysFromNow, gte: now }
     }
 
     const items = await db.inventoryItem.findMany({
       where,
-      include: {
-        product: true,
-      },
-      orderBy: {
-        expirationDate: 'asc',
-      },
+      include: { product: true },
+      orderBy: { expirationDate: 'asc' },
     })
 
     const serialized = items.map(item => ({
@@ -84,16 +76,17 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    db = await getDb()
+    const dbResult = await (await import('@/lib/db')).ensureTables()
+    db = dbResult.db
+
     if (!db) {
       return NextResponse.json(
-        { error: 'Base de datos no disponible. Intenta de nuevo en unos segundos.' },
+        { error: 'Base de datos no disponible.' },
         { status: 503 }
       )
     }
 
-    // If productId starts with "off-" or "manual-", it's a virtual product
-    // from Open Food Facts or manual entry — we need to create it in the DB first
+    // If productId starts with "off-" or "manual-", create product first
     if (productId.startsWith('off-') || productId.startsWith('manual-')) {
       const productData = body.productData
       if (!productData || !productData.name) {
@@ -103,19 +96,15 @@ export async function POST(request: NextRequest) {
         )
       }
 
-      // Check if product already exists in DB by barcode
       const barcode = productData.barcode || productId
-      const existing = await db.product.findFirst({
-        where: { barcode },
-      })
+      const existing = await db.product.findFirst({ where: { barcode } })
 
       if (existing) {
         productId = existing.id
       } else {
-        // Create the product in the database
         const newProduct = await db.product.create({
           data: {
-            barcode: barcode,
+            barcode,
             name: productData.name,
             brand: productData.brand || null,
             category: productData.category || null,
@@ -130,14 +119,10 @@ export async function POST(request: NextRequest) {
         productId = newProduct.id
       }
     } else {
-      // Verify product exists
-      const product = await db.product.findUnique({
-        where: { id: productId },
-      })
-
+      const product = await db.product.findUnique({ where: { id: productId } })
       if (!product) {
         return NextResponse.json(
-          { error: 'Producto no encontrado. Vuelve a escanearlo.' },
+          { error: 'Producto no encontrado.' },
           { status: 404 }
         )
       }
@@ -150,9 +135,7 @@ export async function POST(request: NextRequest) {
         location: location ?? 'fridge',
         expirationDate: expirationDate ? new Date(expirationDate) : null,
       },
-      include: {
-        product: true,
-      },
+      include: { product: true },
     })
 
     const serialized = {
@@ -171,9 +154,10 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json(serialized, { status: 201 })
   } catch (error: any) {
-    console.error('Error al agregar al inventario:', error?.message || error)
+    const msg = error?.message || String(error)
+    console.error('Error al agregar al inventario:', msg)
     return NextResponse.json(
-      { error: 'Error al guardar. Intenta de nuevo.' },
+      { error: `Error al guardar: ${msg}` },
       { status: 500 }
     )
   }
