@@ -152,8 +152,10 @@ export function ScannerView() {
   const addToInventory = async () => {
     try {
       let productId = product?.id
+      let productDataPayload: Record<string, unknown> | null = null
 
       if (!productId) {
+        // Fully manual product (no barcode scan)
         const manualBarcode = `MANUAL-${Date.now()}`
         const res = await fetch('/api/barcode/lookup', {
           method: 'POST',
@@ -168,21 +170,42 @@ export function ScannerView() {
         if (res.ok) {
           const data = await res.json()
           productId = data.id
+          productDataPayload = data
         } else {
           toast.error('Error al crear el producto')
           return
         }
+      } else if (productId.startsWith('off-') || productId.startsWith('manual-')) {
+        // Virtual product (from Open Food Facts or manual) — send full data so
+        // the inventory API can create it in the DB if needed
+        productDataPayload = {
+          barcode: product.barcode,
+          name: product.name,
+          brand: product.brand,
+          category: product.category,
+          imageUrl: product.imageUrl,
+          quantity: product.quantity,
+          nutritionGrade: product.nutritionGrade,
+          ingredients: product.ingredients,
+          allergens: product.allergens,
+          allergensTags: product.allergensTags,
+        }
+      }
+
+      const requestBody: Record<string, unknown> = {
+        productId,
+        quantity: parseInt(quantity) || 1,
+        location,
+        expirationDate: expirationDate || null,
+      }
+      if (productDataPayload) {
+        requestBody.productData = productDataPayload
       }
 
       const res = await fetch('/api/inventory', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          productId,
-          quantity: parseInt(quantity) || 1,
-          location,
-          expirationDate: expirationDate || null,
-        }),
+        body: JSON.stringify(requestBody),
       })
 
       if (res.ok) {

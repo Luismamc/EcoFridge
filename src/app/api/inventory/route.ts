@@ -72,7 +72,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { productId, quantity, location, expirationDate } = body
+    let { productId, quantity, location, expirationDate } = body
 
     if (!productId) {
       return NextResponse.json(
@@ -89,26 +89,55 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // If productId starts with "off-" or "manual-", create product first
+    // If productId starts with "off-" or "manual-", it's a virtual product
+    // from Open Food Facts or manual entry — we need to create it in the DB first
     if (productId.startsWith('off-') || productId.startsWith('manual-')) {
-      // The product was a virtual one from Open Food Facts or manual entry
-      // We need to create it in the database first
-      return NextResponse.json(
-        { error: 'Este producto necesita ser creado primero. Vuelve al escaner y busca el producto de nuevo.' },
-        { status: 400 }
-      )
-    }
+      const productData = body.productData
+      if (!productData || !productData.name) {
+        return NextResponse.json(
+          { error: 'Faltan datos del producto para crearlo. Vuelve al escaner.' },
+          { status: 400 }
+        )
+      }
 
-    // Verify product exists
-    const product = await db.product.findUnique({
-      where: { id: productId },
-    })
+      // Check if product already exists in DB by barcode
+      const barcode = productData.barcode || productId
+      const existing = await db.product.findFirst({
+        where: { barcode },
+      })
 
-    if (!product) {
-      return NextResponse.json(
-        { error: 'Producto no encontrado. Vuelve a escanearlo.' },
-        { status: 404 }
-      )
+      if (existing) {
+        productId = existing.id
+      } else {
+        // Create the product in the database
+        const newProduct = await db.product.create({
+          data: {
+            barcode: barcode,
+            name: productData.name,
+            brand: productData.brand || null,
+            category: productData.category || null,
+            imageUrl: productData.imageUrl || null,
+            quantity: productData.quantity || null,
+            nutritionGrade: productData.nutritionGrade || null,
+            ingredients: productData.ingredients || null,
+            allergens: productData.allergens || null,
+            allergensTags: productData.allergensTags || null,
+          },
+        })
+        productId = newProduct.id
+      }
+    } else {
+      // Verify product exists
+      const product = await db.product.findUnique({
+        where: { id: productId },
+      })
+
+      if (!product) {
+        return NextResponse.json(
+          { error: 'Producto no encontrado. Vuelve a escanearlo.' },
+          { status: 404 }
+        )
+      }
     }
 
     const item = await db.inventoryItem.create({
