@@ -1,6 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
 import ZAI from 'z-ai-web-dev-sdk'
+
+async function getDb() {
+  try {
+    const { ensureTables } = await import('@/lib/db')
+    const result = await ensureTables()
+    if (result.error) {
+      console.error('DB table error:', result.error)
+    }
+    return result.db
+  } catch (error: any) {
+    console.error('Failed to initialize database:', error?.message || error)
+    return null
+  }
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -100,12 +113,20 @@ Formato de respuesta:
     }
 
     // Create products in database and return them
+    const database = await getDb()
+    if (!database) {
+      return NextResponse.json(
+        { error: 'Base de datos no disponible' },
+        { status: 503 }
+      )
+    }
+
     const results = []
     for (const prod of extractedProducts) {
       const barcode = `TICKET-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`
 
       // Check if a product with the same name already exists
-      const existing = await db.product.findFirst({
+      const existing = await database.product.findFirst({
         where: { name: prod.name },
       })
 
@@ -113,7 +134,7 @@ Formato de respuesta:
       if (existing) {
         product = existing
       } else {
-        product = await db.product.create({
+        product = await database.product.create({
           data: {
             barcode,
             name: prod.name,

@@ -1,71 +1,76 @@
 import { PrismaClient } from '@prisma/client'
 import { createClient, type Client } from '@libsql/client'
-import { PrismaLibSQL } from '@prisma/adapter-libsql'
+
+// ── Ensure DATABASE_URL is always set to something valid ──
+// On Vercel, the original DATABASE_URL may point to a non-existent local path
+if (!process.env.DATABASE_URL) {
+  process.env.DATABASE_URL = 'file:/tmp/ecofridge.db'
+}
 
 // ── Turso credentials ──
 const TURSO_URL = process.env.TURSO_DATABASE_URL
 const TURSO_TOKEN = process.env.TURSO_AUTH_TOKEN
 
-// ── libsql client (for raw SQL: CREATE TABLE, etc.) ──
+// ── State ──
 let _libsql: Client | null = null
+let _db: PrismaClient | null = null
+let tablesEnsured = false
 
+// ── libsql client (for raw SQL: CREATE TABLE, etc.) ──
 function getLibSqlClient(): Client {
   if (_libsql) return _libsql
-  try {
-    if (TURSO_URL && TURSO_TOKEN) {
-      console.log('[DB] Connecting to Turso:', TURSO_URL.substring(0, 30) + '...')
-      _libsql = createClient({ url: TURSO_URL, authToken: TURSO_TOKEN })
-    } else {
-      console.log('[DB] No Turso credentials found, using local SQLite at /tmp/ecofridge.db')
-      _libsql = createClient({ url: 'file:/tmp/ecofridge.db' })
-    }
-  } catch (err) {
-    console.error('[DB] Failed to create libsql client:', err)
+
+  if (TURSO_URL && TURSO_TOKEN) {
+    console.log('[DB] Creating LibSQL client → Turso')
+    _libsql = createClient({ url: TURSO_URL, authToken: TURSO_TOKEN })
+  } else {
+    console.log('[DB] Creating LibSQL client → local /tmp/ecofridge.db')
     _libsql = createClient({ url: 'file:/tmp/ecofridge.db' })
   }
   return _libsql
 }
 
 // ── Prisma client (for ORM queries) ──
-const globalForPrisma = globalThis as unknown as {
-  prisma: PrismaClient | undefined
-}
-
-let _db: PrismaClient | null = null
-
-function getPrismaClient(): PrismaClient {
+async function getPrismaClient(): Promise<PrismaClient> {
   if (_db) return _db
+
+  // Check for cached instance in development
+  const globalForPrisma = globalThis as unknown as { prisma: PrismaClient | undefined }
   if (globalForPrisma.prisma) {
     _db = globalForPrisma.prisma
     return _db
   }
 
-  try {
-    if (TURSO_URL && TURSO_TOKEN) {
+  const useTurso = !!(TURSO_URL && TURSO_TOKEN)
+  console.log(`[DB] useTurso=${useTurso}, TURSO_URL=${TURSO_URL ? TURSO_URL.substring(0, 40) + '...' : 'NOT SET'}, TURSO_TOKEN=${TURSO_TOKEN ? 'SET' : 'NOT SET'}`)
+
+  if (useTurso) {
+    try {
+      // Dynamic import to avoid bundling issues on Vercel
+      const { PrismaLibSQL } = await import('@prisma/adapter-libsql')
       const libsql = getLibSqlClient()
       const adapter = new PrismaLibSQL(libsql)
       _db = new PrismaClient({ adapter })
-      console.log('[DB] PrismaClient created with Turso adapter')
-    } else {
+      console.log('[DB] ✅ PrismaClient created with Turso adapter')
+    } catch (adapterErr: any) {
+      console.error('[DB] ❌ Failed to create Turso adapter:', adapterErr?.message || adapterErr)
+      console.log('[DB] Falling back to local SQLite at /tmp/ecofridge.db')
+      process.env.DATABASE_URL = 'file:/tmp/ecofridge.db'
       _db = new PrismaClient()
-      console.log('[DB] PrismaClient created with local SQLite')
     }
-  } catch (err) {
-    console.error('[DB] Failed to create PrismaClient:', err)
-    // Fallback: try without adapter
+  } else {
+    console.log('[DB] ⚠️ No Turso credentials found. Using local SQLite at /tmp/ecofridge.db')
+    process.env.DATABASE_URL = 'file:/tmp/ecofridge.db'
     _db = new PrismaClient()
-    console.log('[DB] PrismaClient created with fallback local SQLite')
   }
 
-  if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = _db
+  if (process.env.NODE_ENV !== 'production') {
+    globalForPrisma.prisma = _db
+  }
   return _db
 }
 
-export const db = getPrismaClient()
-
-// ── Create tables using libsql directly (most reliable) ──
-let tablesEnsured = false
-
+// ── Create tables using libsql directly ──
 const CREATE_TABLES_SQL = `
 CREATE TABLE IF NOT EXISTS "Product" (
   "id" TEXT NOT NULL PRIMARY KEY,
@@ -132,12 +137,11 @@ CREATE TABLE IF NOT EXISTS "RecipeCache" (
 `
 
 export async function ensureTables(): Promise<{ db: PrismaClient; error: string | null }> {
-  if (tablesEnsured) return { db: getPrismaClient(), error: null }
+  if (tablesEnsured) return { db: await getPrismaClient(), error: null }
 
   try {
     const libsql = getLibSqlClient()
 
-    // Execute each statement separately for better error reporting
     const statements = CREATE_TABLES_SQL
       .split(';')
       .map(s => s.trim())
@@ -147,19 +151,16 @@ export async function ensureTables(): Promise<{ db: PrismaClient; error: string 
       try {
         await libsql.execute(sql)
       } catch (stmtErr: any) {
-        // Some statements may fail if the index/table already exists
-        // Log but continue - we want to be resilient
         console.warn('[DB] Table statement warning:', stmtErr?.message || stmtErr)
       }
     }
 
     tablesEnsured = true
     console.log('[DB] ✅ Database tables ensured successfully')
-    return { db: getPrismaClient(), error: null }
+    return { db: await getPrismaClient(), error: null }
   } catch (error: any) {
     const msg = error?.message || String(error)
     console.error('[DB] ❌ Error ensuring database tables:', msg)
-    // Still return db - some tables might have been created
-    return { db: getPrismaClient(), error: msg }
+    return { db: await getPrismaClient(), error: msg }
   }
 }
