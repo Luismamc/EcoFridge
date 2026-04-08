@@ -1,6 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
 import ZAI from 'z-ai-web-dev-sdk'
+
+async function getDb() {
+  try {
+    const { ensureTables } = await import('@/lib/db')
+    return await ensureTables()
+  } catch {
+    return null
+  }
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -14,28 +22,34 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Sort ingredients to create a consistent cache key
     const sortedIngredients = [...ingredients].sort()
     const cacheKey = JSON.stringify(sortedIngredients)
 
-    // Check cache first
-    const cachedRecipes = await db.recipeCache.findMany({
-      where: { ingredients: cacheKey },
-    })
+    const db = await getDb()
 
-    if (cachedRecipes.length > 0) {
-      const recipes = cachedRecipes.map((r) => {
-        const parsed = JSON.parse(r.recipeData)
-        // Normalize to Spanish field names
-        return {
-          nombre: parsed.name || parsed.nombre || 'Receta sin nombre',
-          ingredientes: parsed.ingredients || parsed.ingredientes || [],
-          pasos: parsed.steps || parsed.pasos || [],
-          tiempoPreparacion: parsed.prepTime || parsed.tiempoPreparacion || '30 minutos',
-          dificultad: parsed.difficulty || parsed.dificultad || 'media',
+    // Check cache first (only if DB is available)
+    if (db) {
+      try {
+        const cachedRecipes = await db.recipeCache.findMany({
+          where: { ingredients: cacheKey },
+        })
+
+        if (cachedRecipes.length > 0) {
+          const recipes = cachedRecipes.map((r) => {
+            const parsed = JSON.parse(r.recipeData)
+            return {
+              nombre: parsed.name || parsed.nombre || 'Receta sin nombre',
+              ingredientes: parsed.ingredients || parsed.ingredientes || [],
+              pasos: parsed.steps || parsed.pasos || [],
+              tiempoPreparacion: parsed.prepTime || parsed.tiempoPreparacion || '30 minutos',
+              dificultad: parsed.difficulty || parsed.dificultad || 'media',
+            }
+          })
+          return NextResponse.json(recipes)
         }
-      })
-      return NextResponse.json(recipes)
+      } catch {
+        // Cache read failed, continue to generate
+      }
     }
 
     // Call AI to generate recipes
@@ -77,7 +91,6 @@ Genera recetas que pueda preparar con estos ingredientes. Si hace falta algún i
       )
     }
 
-    // Parse the AI response - handle potential markdown code blocks
     let cleanedContent = content.trim()
     if (cleanedContent.startsWith('```')) {
       cleanedContent = cleanedContent
@@ -97,7 +110,6 @@ Genera recetas que pueda preparar con estos ingredientes. Si hace falta algún i
       )
     }
 
-    // Normalize all recipes to Spanish field names
     const normalizedRecipes = recipes.map((recipe: unknown) => {
       const r = recipe as Record<string, unknown>
       return {
@@ -109,14 +121,20 @@ Genera recetas que pueda preparar con estos ingredientes. Si hace falta algún i
       }
     })
 
-    // Cache each recipe
-    await db.recipeCache.createMany({
-      data: normalizedRecipes.map(recipe => ({
-        ingredients: cacheKey,
-        recipeName: recipe.nombre,
-        recipeData: JSON.stringify(recipe),
-      })),
-    })
+    // Cache each recipe (only if DB is available)
+    if (db) {
+      try {
+        await db.recipeCache.createMany({
+          data: normalizedRecipes.map(recipe => ({
+            ingredients: cacheKey,
+            recipeName: recipe.nombre,
+            recipeData: JSON.stringify(recipe),
+          })),
+        })
+      } catch {
+        // Cache write failed - not critical
+      }
+    }
 
     return NextResponse.json(normalizedRecipes)
   } catch (error) {

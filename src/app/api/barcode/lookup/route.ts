@@ -23,6 +23,15 @@ interface OpenFoodFactsResponse {
   product?: OpenFoodFactsProduct
 }
 
+async function getDb() {
+  try {
+    const { ensureTables } = await import('@/lib/db')
+    return await ensureTables()
+  } catch {
+    return null
+  }
+}
+
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
@@ -35,19 +44,19 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    // Try to get from local database first (may fail on Vercel)
-    let existingProduct = null
-    try {
-      const { db } = await import('@/lib/db')
-      existingProduct = await db.product.findUnique({
-        where: { barcode },
-      })
-    } catch {
-      // Database not available (e.g. first time on Vercel), continue to Open Food Facts
-    }
-
-    if (existingProduct) {
-      return NextResponse.json(existingProduct)
+    // Try to get from local database first
+    const db = await getDb()
+    if (db) {
+      try {
+        const existingProduct = await db.product.findUnique({
+          where: { barcode },
+        })
+        if (existingProduct) {
+          return NextResponse.json(existingProduct)
+        }
+      } catch {
+        // Table might not exist yet, continue to Open Food Facts
+      }
     }
 
     // Fetch from Open Food Facts
@@ -111,28 +120,29 @@ export async function GET(request: NextRequest) {
       updatedAt: new Date().toISOString(),
     }
 
-    // Try to save to local database (may fail on Vercel, that's ok)
-    try {
-      const { db } = await import('@/lib/db')
-      const existing = await db.product.findUnique({ where: { barcode: p.code } })
-      if (!existing) {
-        await db.product.create({
-          data: {
-            barcode: p.code,
-            name: p.product_name_es || p.product_name || 'Producto sin nombre',
-            brand: p.brands || null,
-            category: p.categories || null,
-            imageUrl: p.image_url || p.image_front_url || null,
-            quantity: p.quantity || null,
-            nutritionGrade: p.nutrition_grades || null,
-            ingredients: p.ingredients_text_es || p.ingredients_text || null,
-            allergens: allergenNames.length > 0 ? JSON.stringify(allergenNames) : null,
-            allergensTags: p.allergens ? p.allergens : null,
-          },
-        })
+    // Try to save to local database
+    if (db) {
+      try {
+        const existing = await db.product.findUnique({ where: { barcode: p.code } })
+        if (!existing) {
+          await db.product.create({
+            data: {
+              barcode: p.code,
+              name: p.product_name_es || p.product_name || 'Producto sin nombre',
+              brand: p.brands || null,
+              category: p.categories || null,
+              imageUrl: p.image_url || p.image_front_url || null,
+              quantity: p.quantity || null,
+              nutritionGrade: p.nutrition_grades || null,
+              ingredients: p.ingredients_text_es || p.ingredients_text || null,
+              allergens: allergenNames.length > 0 ? JSON.stringify(allergenNames) : null,
+              allergensTags: p.allergens ? p.allergens : null,
+            },
+          })
+        }
+      } catch {
+        // Database save failed - not critical
       }
-    } catch {
-      // Database save failed - not critical, we still return the product data
     }
 
     return NextResponse.json(product)
@@ -159,46 +169,49 @@ export async function POST(request: NextRequest) {
     }
 
     // Try to save to database
-    try {
-      const { db } = await import('@/lib/db')
+    const db = await getDb()
+    if (db) {
+      try {
+        const existing = await db.product.findUnique({
+          where: { barcode },
+        })
 
-      const existing = await db.product.findUnique({
-        where: { barcode },
-      })
+        if (existing) {
+          return NextResponse.json(existing)
+        }
 
-      if (existing) {
-        return NextResponse.json(existing)
+        const product = await db.product.create({
+          data: {
+            barcode,
+            name,
+            brand: brand || null,
+            category: category || null,
+          },
+        })
+
+        return NextResponse.json(product)
+      } catch {
+        // Database save failed, fall through to virtual product
       }
-
-      const product = await db.product.create({
-        data: {
-          barcode,
-          name,
-          brand: brand || null,
-          category: category || null,
-        },
-      })
-
-      return NextResponse.json(product)
-    } catch {
-      // Database not available - return a virtual product object
-      const product = {
-        id: `manual-${barcode}`,
-        barcode,
-        name,
-        brand: brand || null,
-        category: category || null,
-        imageUrl: null,
-        quantity: null,
-        nutritionGrade: null,
-        ingredients: null,
-        allergens: null,
-        allergensTags: null,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      }
-      return NextResponse.json(product)
     }
+
+    // Database not available - return a virtual product object
+    const product = {
+      id: `manual-${barcode}`,
+      barcode,
+      name,
+      brand: brand || null,
+      category: category || null,
+      imageUrl: null,
+      quantity: null,
+      nutritionGrade: null,
+      ingredients: null,
+      allergens: null,
+      allergensTags: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }
+    return NextResponse.json(product)
   } catch (error) {
     console.error('Error al crear producto manual:', error)
     return NextResponse.json(

@@ -1,11 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
+
+async function getDb() {
+  try {
+    const { ensureTables } = await import('@/lib/db')
+    return await ensureTables()
+  } catch (error) {
+    console.error('Failed to initialize database:', error)
+    return null
+  }
+}
 
 export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const db = await getDb()
+    if (!db) {
+      return NextResponse.json(
+        { error: 'Base de datos no disponible' },
+        { status: 503 }
+      )
+    }
+
     const { id } = await params
     const body = await request.json()
     const { consumed, quantity, expirationDate, location, consumedAs, recipeName } = body
@@ -82,6 +99,14 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const db = await getDb()
+    if (!db) {
+      return NextResponse.json(
+        { error: 'Base de datos no disponible' },
+        { status: 503 }
+      )
+    }
+
     const { id } = await params
 
     const existing = await db.inventoryItem.findUnique({

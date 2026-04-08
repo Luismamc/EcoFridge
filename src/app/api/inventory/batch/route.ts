@@ -1,5 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
+
+async function getDb() {
+  try {
+    const { ensureTables } = await import('@/lib/db')
+    return await ensureTables()
+  } catch {
+    return null
+  }
+}
 
 interface BatchItem {
   productId: string
@@ -10,6 +18,14 @@ interface BatchItem {
 
 export async function POST(request: NextRequest) {
   try {
+    const db = await getDb()
+    if (!db) {
+      return NextResponse.json(
+        { error: 'Base de datos no disponible' },
+        { status: 503 }
+      )
+    }
+
     const body = await request.json()
     const { items } = body as { items: BatchItem[] }
 
@@ -23,35 +39,51 @@ export async function POST(request: NextRequest) {
     const results = []
 
     for (const item of items) {
-      // Verify product exists
-      const product = await db.product.findUnique({
-        where: { id: item.productId },
-      })
+      try {
+        let productId = item.productId
 
-      if (!product) {
-        results.push({ error: `Producto no encontrado: ${item.productId}`, success: false })
-        continue
+        // Handle virtual product IDs (off-*, manual-*)
+        if (productId.startsWith('off-') || productId.startsWith('manual-')) {
+          const existing = await db.product.findFirst({
+            where: { barcode: productId },
+          })
+          if (existing) {
+            productId = existing.id
+          }
+        }
+
+        // Verify product exists
+        const product = await db.product.findUnique({
+          where: { id: productId },
+        })
+
+        if (!product) {
+          results.push({ error: `Producto no encontrado: ${item.productId}`, success: false })
+          continue
+        }
+
+        const inventoryItem = await db.inventoryItem.create({
+          data: {
+            productId: item.productId,
+            quantity: item.quantity || 1,
+            location: item.location || 'fridge',
+            expirationDate: item.expirationDate ? new Date(item.expirationDate) : null,
+          },
+          include: { product: true },
+        })
+
+        results.push({
+          id: inventoryItem.id,
+          productId: inventoryItem.productId,
+          product: inventoryItem.product,
+          quantity: inventoryItem.quantity,
+          location: inventoryItem.location,
+          expirationDate: inventoryItem.expirationDate?.toISOString() ?? null,
+          success: true,
+        })
+      } catch (err) {
+        results.push({ error: `Error con producto ${item.productId}`, success: false })
       }
-
-      const inventoryItem = await db.inventoryItem.create({
-        data: {
-          productId: item.productId,
-          quantity: item.quantity || 1,
-          location: item.location || 'fridge',
-          expirationDate: item.expirationDate ? new Date(item.expirationDate) : null,
-        },
-        include: { product: true },
-      })
-
-      results.push({
-        id: inventoryItem.id,
-        productId: inventoryItem.productId,
-        product: inventoryItem.product,
-        quantity: inventoryItem.quantity,
-        location: inventoryItem.location,
-        expirationDate: inventoryItem.expirationDate?.toISOString() ?? null,
-        success: true,
-      })
     }
 
     const successCount = results.filter(r => r.success).length

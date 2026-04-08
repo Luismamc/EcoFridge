@@ -1,5 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
+
+async function getDb() {
+  try {
+    const { ensureTables } = await import('@/lib/db')
+    return await ensureTables()
+  } catch {
+    return null
+  }
+}
 
 function formatMonth(monthKey: string): string {
   const [year, month] = monthKey.split('-')
@@ -13,11 +21,15 @@ function formatDate(d: string) {
 
 export async function GET(request: NextRequest) {
   try {
+    const db = await getDb()
+    if (!db) {
+      return NextResponse.json({ error: 'Base de datos no disponible' }, { status: 503 })
+    }
+
     const { searchParams } = new URL(request.url)
     const from = searchParams.get('from') || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
     const to = searchParams.get('to') || new Date().toISOString().split('T')[0]
 
-    // Consumption logs
     const consumptionWhere: Record<string, unknown> = {}
     if (from || to) {
       consumptionWhere.consumedAt = {}
@@ -32,7 +44,6 @@ export async function GET(request: NextRequest) {
 
     const totalConsumed = consumptionLogs.reduce((sum, log) => sum + log.quantity, 0)
 
-    // Consumption by type
     const consumedByType: Record<string, number> = { individual: 0, recipe: 0 }
     const consumedByRecipe: Record<string, number> = {}
     for (const log of consumptionLogs) {
@@ -43,7 +54,6 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Waste logs
     const wasteWhere: Record<string, unknown> = {}
     if (from || to) {
       wasteWhere.discardedAt = {}
@@ -63,7 +73,6 @@ export async function GET(request: NextRequest) {
     const totalProcessed = totalConsumed + totalWasted
     const efficiencyRate = totalProcessed > 0 ? Math.round((totalConsumed / totalProcessed) * 1000) / 10 : 100
 
-    // Waste by reason
     const wasteByReason: Record<string, number> = {}
     const reasonLabels: Record<string, string> = {
       expired: 'Caducado', spoiled: 'Estropeado', excess: 'Sobrante', taste: 'No me gustó', other: 'Otro',
@@ -73,14 +82,12 @@ export async function GET(request: NextRequest) {
       wasteByReason[reason] = (wasteByReason[reason] || 0) + log.quantity
     }
 
-    // Waste by category
     const wasteByCategory: Record<string, number> = {}
     for (const log of wasteLogs) {
       const category = log.product?.category?.split(',')[0]?.trim() || 'Sin categoría'
       wasteByCategory[category] = (wasteByCategory[category] || 0) + log.quantity
     }
 
-    // Monthly trends
     const monthlyTrends: Record<string, { consumedIndividual: number; consumedRecipe: number; wasted: number }> = {}
     for (const log of consumptionLogs) {
       const mk = log.consumedAt.toISOString().slice(0, 7)

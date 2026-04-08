@@ -1,8 +1,21 @@
 import { NextResponse } from 'next/server'
-import { db } from '@/lib/db'
+
+async function getDb() {
+  try {
+    const { ensureTables } = await import('@/lib/db')
+    return await ensureTables()
+  } catch {
+    return null
+  }
+}
 
 export async function GET() {
   try {
+    const db = await getDb()
+    if (!db) {
+      return NextResponse.json([])
+    }
+
     const now = new Date()
     const twoDaysFromNow = new Date(now.getTime() + 2 * 24 * 60 * 60 * 1000)
 
@@ -21,7 +34,6 @@ export async function GET() {
       },
     })
 
-    // Serialize dates and return direct array matching InventoryItem type
     const serialized = alertItems.map(item => ({
       id: item.id,
       productId: item.productId,
@@ -51,9 +63,6 @@ export async function GET() {
     return NextResponse.json(serialized)
   } catch (error) {
     console.error('Error al obtener alertas:', error)
-    return NextResponse.json(
-      { error: 'Error interno del servidor' },
-      { status: 500 }
-    )
+    return NextResponse.json([])
   }
 }

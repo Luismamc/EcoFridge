@@ -2,9 +2,11 @@ import { NextRequest, NextResponse } from 'next/server'
 
 async function getDb() {
   try {
-    const { db } = await import('@/lib/db')
+    const { ensureTables } = await import('@/lib/db')
+    const db = await ensureTables()
     return db
-  } catch {
+  } catch (error) {
+    console.error('Failed to initialize database:', error)
     return null
   }
 }
@@ -70,6 +72,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  let db = null
   try {
     const body = await request.json()
     let { productId, quantity, location, expirationDate } = body
@@ -81,10 +84,10 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const db = await getDb()
+    db = await getDb()
     if (!db) {
       return NextResponse.json(
-        { error: 'Base de datos no disponible. La app necesita un servidor con base de datos persistente.' },
+        { error: 'Base de datos no disponible. Intenta de nuevo en unos segundos.' },
         { status: 503 }
       )
     }
@@ -95,7 +98,7 @@ export async function POST(request: NextRequest) {
       const productData = body.productData
       if (!productData || !productData.name) {
         return NextResponse.json(
-          { error: 'Faltan datos del producto para crearlo. Vuelve al escaner.' },
+          { error: 'Faltan datos del producto. Vuelve al escáner.' },
           { status: 400 }
         )
       }
@@ -167,10 +170,10 @@ export async function POST(request: NextRequest) {
     }
 
     return NextResponse.json(serialized, { status: 201 })
-  } catch (error) {
-    console.error('Error al agregar al inventario:', error)
+  } catch (error: any) {
+    console.error('Error al agregar al inventario:', error?.message || error)
     return NextResponse.json(
-      { error: 'Error interno del servidor' },
+      { error: 'Error al guardar. Intenta de nuevo.' },
       { status: 500 }
     )
   }

@@ -1,9 +1,22 @@
 // Consumption log history API
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
+
+async function getDb() {
+  try {
+    const { ensureTables } = await import('@/lib/db')
+    return await ensureTables()
+  } catch {
+    return null
+  }
+}
 
 export async function GET(request: NextRequest) {
   try {
+    const db = await getDb()
+    if (!db) {
+      return NextResponse.json([])
+    }
+
     const { searchParams } = new URL(request.url)
     const from = searchParams.get('from')
     const to = searchParams.get('to')
@@ -53,9 +66,6 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(serialized)
   } catch (error) {
     console.error('Error al obtener historial de consumo:', error)
-    return NextResponse.json(
-      { error: 'Error interno del servidor' },
-      { status: 500 }
-    )
+    return NextResponse.json([])
   }
 }

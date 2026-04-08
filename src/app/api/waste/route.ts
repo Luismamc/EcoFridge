@@ -1,8 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
+
+async function getDb() {
+  try {
+    const { ensureTables } = await import('@/lib/db')
+    return await ensureTables()
+  } catch {
+    return null
+  }
+}
 
 export async function GET(request: NextRequest) {
   try {
+    const db = await getDb()
+    if (!db) {
+      return NextResponse.json([])
+    }
+
     const { searchParams } = new URL(request.url)
     const from = searchParams.get('from')
     const to = searchParams.get('to')
@@ -29,7 +42,6 @@ export async function GET(request: NextRequest) {
       },
     })
 
-    // Serialize dates and return direct array
     const serialized = wasteLogs.map(log => ({
       id: log.id,
       productId: log.productId,
@@ -56,15 +68,20 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(serialized)
   } catch (error) {
     console.error('Error al obtener registros de desperdicio:', error)
-    return NextResponse.json(
-      { error: 'Error interno del servidor' },
-      { status: 500 }
-    )
+    return NextResponse.json([])
   }
 }
 
 export async function POST(request: NextRequest) {
   try {
+    const db = await getDb()
+    if (!db) {
+      return NextResponse.json(
+        { error: 'Base de datos no disponible' },
+        { status: 503 }
+      )
+    }
+
     const body = await request.json()
     const { productId, quantity, reason, notes } = body
 
@@ -75,7 +92,6 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Verify product exists
     const product = await db.product.findUnique({
       where: { id: productId },
     })
@@ -87,7 +103,6 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Create waste log
     const wasteLog = await db.wasteLog.create({
       data: {
         productId,
@@ -100,7 +115,6 @@ export async function POST(request: NextRequest) {
       },
     })
 
-    // Remove corresponding non-consumed inventory items for this product
     const inventoryItems = await db.inventoryItem.findMany({
       where: {
         productId,
