@@ -1,8 +1,7 @@
 import { PrismaClient } from '@prisma/client'
 import { createClient, type Client } from '@libsql/client'
 
-// ── Ensure DATABASE_URL is always set to something valid ──
-// On Vercel, the original DATABASE_URL may point to a non-existent local path
+// ── Ensure DATABASE_URL is always set (required by Prisma internals) ──
 if (!process.env.DATABASE_URL) {
   process.env.DATABASE_URL = 'file:/tmp/ecofridge.db'
 }
@@ -10,6 +9,16 @@ if (!process.env.DATABASE_URL) {
 // ── Turso credentials ──
 const TURSO_URL = process.env.TURSO_DATABASE_URL
 const TURSO_TOKEN = process.env.TURSO_AUTH_TOKEN
+
+// ── Connection info (logged once) ──
+let logged = false
+
+function logOnce(msg: string) {
+  if (!logged) {
+    console.log(msg)
+    logged = true
+  }
+}
 
 // ── State ──
 let _libsql: Client | null = null
@@ -21,10 +30,10 @@ function getLibSqlClient(): Client {
   if (_libsql) return _libsql
 
   if (TURSO_URL && TURSO_TOKEN) {
-    console.log('[DB] Creating LibSQL client → Turso')
+    logOnce(`[DB] LibSQL → Turso (${TURSO_URL.substring(0, 45)}...)`)
     _libsql = createClient({ url: TURSO_URL, authToken: TURSO_TOKEN })
   } else {
-    console.log('[DB] Creating LibSQL client → local /tmp/ecofridge.db')
+    logOnce('[DB] LibSQL → local /tmp/ecofridge.db (no Turso credentials)')
     _libsql = createClient({ url: 'file:/tmp/ecofridge.db' })
   }
   return _libsql
@@ -34,40 +43,41 @@ function getLibSqlClient(): Client {
 async function getPrismaClient(): Promise<PrismaClient> {
   if (_db) return _db
 
-  // Check for cached instance in development
+  // Reuse cached instance in development (hot reload)
   const globalForPrisma = globalThis as unknown as { prisma: PrismaClient | undefined }
   if (globalForPrisma.prisma) {
     _db = globalForPrisma.prisma
     return _db
   }
 
-  const useTurso = !!(TURSO_URL && TURSO_TOKEN)
-  console.log(`[DB] useTurso=${useTurso}, TURSO_URL=${TURSO_URL ? TURSO_URL.substring(0, 40) + '...' : 'NOT SET'}, TURSO_TOKEN=${TURSO_TOKEN ? 'SET' : 'NOT SET'}`)
-
-  if (useTurso) {
-    try {
-      // Dynamic import to avoid bundling issues on Vercel
-      const { PrismaLibSQL } = await import('@prisma/adapter-libsql')
-      const libsql = getLibSqlClient()
-      const adapter = new PrismaLibSQL(libsql)
-      _db = new PrismaClient({ adapter })
-      console.log('[DB] ✅ PrismaClient created with Turso adapter')
-    } catch (adapterErr: any) {
-      console.error('[DB] ❌ Failed to create Turso adapter:', adapterErr?.message || adapterErr)
-      console.log('[DB] Falling back to local SQLite at /tmp/ecofridge.db')
-      process.env.DATABASE_URL = 'file:/tmp/ecofridge.db'
-      _db = new PrismaClient()
-    }
+  if (TURSO_URL && TURSO_TOKEN) {
+    // ── Turso: NO fallback to local SQLite ──
+    // Import adapter statically at top level for reliability
+    const { PrismaLibSQL } = await import('@prisma/adapter-libsql')
+    const libsql = getLibSqlClient()
+    const adapter = new PrismaLibSQL(libsql)
+    _db = new PrismaClient({ adapter })
+    logOnce('[DB] ✅ PrismaClient with Turso adapter')
   } else {
-    console.log('[DB] ⚠️ No Turso credentials found. Using local SQLite at /tmp/ecofridge.db')
-    process.env.DATABASE_URL = 'file:/tmp/ecofridge.db'
+    // ── Local development: SQLite at /tmp ──
     _db = new PrismaClient()
+    logOnce('[DB] ⚠️ PrismaClient with local SQLite (ephemeral on Vercel)')
   }
 
   if (process.env.NODE_ENV !== 'production') {
     globalForPrisma.prisma = _db
   }
   return _db
+}
+
+// ── Export connection info (read-only) ──
+export function getDbInfo() {
+  return {
+    tursoUrl: TURSO_URL ? 'SET' : 'NOT SET',
+    tursoToken: TURSO_TOKEN ? 'SET' : 'NOT SET',
+    databaseUrl: process.env.DATABASE_URL,
+    usingTurso: !!(TURSO_URL && TURSO_TOKEN),
+  }
 }
 
 // ── Create tables using libsql directly ──
@@ -151,16 +161,17 @@ export async function ensureTables(): Promise<{ db: PrismaClient; error: string 
       try {
         await libsql.execute(sql)
       } catch (stmtErr: any) {
-        console.warn('[DB] Table statement warning:', stmtErr?.message || stmtErr)
+        // Log but continue — tables might already exist
+        console.warn('[DB] Table creation note:', stmtErr?.message || stmtErr)
       }
     }
 
     tablesEnsured = true
-    console.log('[DB] ✅ Database tables ensured successfully')
+    console.log('[DB] ✅ Tables ensured')
     return { db: await getPrismaClient(), error: null }
   } catch (error: any) {
     const msg = error?.message || String(error)
-    console.error('[DB] ❌ Error ensuring database tables:', msg)
+    console.error('[DB] ❌ ensureTables error:', msg)
     return { db: await getPrismaClient(), error: msg }
   }
 }
